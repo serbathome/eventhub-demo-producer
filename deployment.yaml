@@ -3,6 +3,16 @@ kind: Namespace
 metadata:
   name: kafka-demo
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eventhub-kafka-producer-secrets
+  namespace: kafka-demo
+type: Opaque
+stringData:
+  KAFKA_SASL_JAAS_CONFIG: ''
+  AZURE_STORAGE_CONNECTION_STRING: ''
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,16 +32,27 @@ spec:
     spec:
       containers:
         - name: eventhub-kafka-producer
-          image: mydemoreg.azurecr.io/eventhub-kafka-producer:1
+          image: mydemoreg.azurecr.io/eventhub-kafka-producer:4
           ports:
             - containerPort: 8080
+          env:
+            - name: KAFKA_SASL_JAAS_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: eventhub-kafka-producer-secrets
+                  key: KAFKA_SASL_JAAS_CONFIG
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: eventhub-kafka-producer-secrets
+                  key: AZURE_STORAGE_CONNECTION_STRING
           resources:
             requests:
               memory: "256Mi"
               cpu: "250m"
             limits:
-              memory: "512Mi"
-              cpu: "500m"
+              memory: "8Gi"
+              cpu: "1500m"
 ---
 apiVersion: v1
 kind: Service
@@ -46,3 +67,5 @@ spec:
       port: 80
       targetPort: 8080
   type: ClusterIP
+---
+
