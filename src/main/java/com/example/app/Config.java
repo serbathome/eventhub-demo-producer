@@ -33,9 +33,6 @@ public class Config {
     @ConfigProperty(name = "azure.storage.container-name")
     String blobContainerName;
 
-    @ConfigProperty(name = "message.payload-size", defaultValue = "512000")
-    int payloadSize;
-
     public Properties kafkaProps() {
         var props = new Properties();
         props.put("bootstrap.servers", bootstrapServers);
@@ -49,5 +46,4 @@ public class Config {
     public String topic() { return topic; }
     public String blobConnectionString() { return blobConnectionString; }
     public String blobContainerName() { return blobContainerName; }
-    public int payloadSize() { return payloadSize; }
 }

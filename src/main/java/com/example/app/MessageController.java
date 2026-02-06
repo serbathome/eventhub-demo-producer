@@ -22,7 +22,8 @@ public class MessageController {
             var duration = messageService.sendMessages(
                 request.messageCount(),
                 request.externalPayload(),
-                request.useFlink()
+                request.useFlink(),
+                request.payloadSize()
             );
             return "{'duration': '" + duration + "'}";
         } catch (Exception e) {

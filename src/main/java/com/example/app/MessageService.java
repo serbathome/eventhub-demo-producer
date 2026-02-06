@@ -8,18 +8,26 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.IntStream;
 
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
+import org.apache.flink.runtime.minicluster.MiniCluster;
+import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.jboss.logging.Logger;
 
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import io.quarkus.runtime.Startup;
 import reactor.core.publisher.Flux;
 
+@Startup
 @ApplicationScoped
 public class MessageService {
 
@@ -31,8 +39,63 @@ public class MessageService {
     @Inject
     BlobStorage blobStorage;
 
-    public long sendMessages(int messageCount, boolean externalPayload, boolean useFlink) throws Exception {
-        var payload = generatePayload(config.payloadSize());
+    private MiniCluster miniCluster;
+    private KafkaSink<String> kafkaSink;
+    private String restAddress;
+    private int restPort;
+
+    @PostConstruct
+    void init() {
+        try {
+            LOG.info("Starting Flink MiniCluster...");
+            var flinkConfig = new Configuration();
+            flinkConfig.set(RestOptions.BIND_PORT, "0");  // Random available port
+            
+            var clusterConfig = new MiniClusterConfiguration.Builder()
+                .setNumTaskManagers(1)
+                .setNumSlotsPerTaskManager(2)
+                .setConfiguration(flinkConfig)
+                .build();
+            
+            miniCluster = new MiniCluster(clusterConfig);
+            miniCluster.start();
+            
+            var restUri = miniCluster.getRestAddress().get();
+            restAddress = restUri.getHost();
+            restPort = restUri.getPort();
+            
+            // Build reusable KafkaSink
+            var sinkBuilder = KafkaSink.<String>builder()
+                .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+                    .setTopic(config.topic())
+                    .setValueSerializationSchema(new SimpleStringSchema())
+                    .build());
+            config.kafkaProps().stringPropertyNames().forEach(k -> 
+                sinkBuilder.setProperty(k, config.kafkaProps().getProperty(k)));
+            kafkaSink = sinkBuilder.build();
+            
+            LOG.infof("Flink MiniCluster started at %s:%d", restAddress, restPort);
+        } catch (Exception e) {
+            LOG.error("Failed to start Flink MiniCluster", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        if (miniCluster != null) {
+            try {
+                LOG.info("Shutting down Flink MiniCluster...");
+                miniCluster.close();
+                LOG.info("Flink MiniCluster stopped");
+            } catch (Exception e) {
+                LOG.error("Error shutting down MiniCluster", e);
+            }
+        }
+    }
+
+    public long sendMessages(int messageCount, boolean externalPayload, boolean useFlink, int payloadSize) throws Exception {
+        var payload = generatePayload(payloadSize);
         
         LOG.infof("Sending %d messages (%s payload) to '%s' using %s",
             messageCount, externalPayload ? "external" : "inline",
@@ -89,15 +152,8 @@ public class MessageService {
         LOG.info("Sending batch via Flink...");
         var sendStart = System.currentTimeMillis();
         
-        var sink = KafkaSink.<String>builder()
-            .setRecordSerializer(KafkaRecordSerializationSchema.builder()
-                .setTopic(config.topic())
-                .setValueSerializationSchema(new SimpleStringSchema())
-                .build());
-        config.kafkaProps().stringPropertyNames().forEach(k -> sink.setProperty(k, config.kafkaProps().getProperty(k)));
-        
-        var env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.fromCollection(messages).sinkTo(sink.build());
+        var env = StreamExecutionEnvironment.createRemoteEnvironment(restAddress, restPort);
+        env.fromCollection(messages).sinkTo(kafkaSink);
         env.execute("Send to EventHub");
         
         LOG.infof("Flink send time: %dms", System.currentTimeMillis() - sendStart);
@@ -111,6 +167,6 @@ public class MessageService {
     }
 
     private String buildMessage(String id, String payload) {
-        return "{'id'='" + id + "', 'payload'='" + payload + "'}";
+        return "{\"id\":\"" + id + "\",\"payload\":\"" + payload + "\"}";
     }
 }
